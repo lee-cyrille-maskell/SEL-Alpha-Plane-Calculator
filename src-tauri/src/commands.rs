@@ -8,6 +8,7 @@ pub struct AppState {
     pub current_project: Option<AlphaPlaneProject>,
     pub current_file_path: Option<String>,
     pub undo_stack: Vec<AlphaPlaneProject>,
+    pub redo_stack: Vec<AlphaPlaneProject>,
 }
 
 impl AppState {
@@ -16,6 +17,7 @@ impl AppState {
             current_project: None,
             current_file_path: None,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -25,6 +27,7 @@ impl AppState {
             if self.undo_stack.len() > 50 {
                 self.undo_stack.remove(0);
             }
+            self.redo_stack.clear();
         }
     }
 }
@@ -206,8 +209,30 @@ pub fn clear_test_points(state: State<'_, Mutex<AppState>>) -> Result<AlphaPlane
 pub fn undo(state: State<'_, Mutex<AppState>>) -> Result<Option<AlphaPlaneProject>, String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
     if let Some(prev) = s.undo_stack.pop() {
+        let old = s.current_project.take();
+        if let Some(current) = old {
+            s.redo_stack.push(current);
+            if s.redo_stack.len() > 50 {
+                s.redo_stack.remove(0);
+            }
+        }
         s.current_project = Some(prev.clone());
         Ok(Some(prev))
+    } else {
+        Ok(s.current_project.clone())
+    }
+}
+
+#[tauri::command]
+pub fn redo(state: State<'_, Mutex<AppState>>) -> Result<Option<AlphaPlaneProject>, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    if let Some(next) = s.redo_stack.pop() {
+        let old = s.current_project.take();
+        if let Some(current) = old {
+            s.undo_stack.push(current);
+        }
+        s.current_project = Some(next.clone());
+        Ok(Some(next))
     } else {
         Ok(s.current_project.clone())
     }

@@ -96,12 +96,12 @@ impl AlphaPlaneProject {
             test_parameters: TestParameters {
                 reference_current_mag: 1.0,
                 reference_current_angle: 0.0,
-                frequency: 50.0,
+                frequency: 60.0,
                 prefault_time_s: 1.0,
                 max_fault_time_s: 5.0,
                 delay_time_s: 0.5,
-                fault_type: "A".to_string(),
-                tolerance: 0.1,
+                fault_type: "3P".to_string(),
+                tolerance: 5.0,
             },
             test_points: Vec::new(),
         }

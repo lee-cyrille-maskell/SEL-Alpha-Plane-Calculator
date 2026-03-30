@@ -35,18 +35,30 @@ export function isInRestraintRegion(r, thetaDeg, lr87, lang87) {
   return distFrom180 <= halfAngle;
 }
 
-export function determineResult(r, thetaDeg, lr87, lang87, tolerance) {
+// tolerancePct: percentage (e.g. 5 = 5%). Per Omicron "Check Test Tol." spec.
+export function determineResult(r, thetaDeg, lr87, lang87, tolerancePct) {
   if (lr87 <= 0) return 'TRIP';
   const innerR = 1 / lr87;
   const outerR = lr87;
   const halfAngle = lang87 / 2;
-  const distOuter = Math.abs(r - outerR);
-  const distInner = Math.abs(r - innerR);
+  const tolFrac = tolerancePct / 100;
+
+  const nearOuter = Math.abs(r - outerR) < outerR * tolFrac;
+  const nearInner = Math.abs(r - innerR) < innerR * tolFrac;
+
   const angDistDeg = angularDistance(thetaDeg, 180);
   const angFromEdge = Math.abs(angDistDeg - halfAngle);
   const angDistLinear = r * (angFromEdge * DEG2RAD);
-  const minDist = Math.min(distOuter, distInner, angDistLinear);
-  if (minDist < tolerance) return 'INSIDE_LIMITS';
+  const nearAngle = angDistLinear < r * tolFrac;
+
+  const inRadialRange = r >= innerR && r <= outerR;
+  const inAngularRange = angularDistance(thetaDeg, 180) <= halfAngle;
+
+  const insideLimits = (nearOuter && inAngularRange)
+    || (nearInner && inAngularRange)
+    || (nearAngle && inRadialRange);
+
+  if (insideLimits) return 'INSIDE_LIMITS';
   if (isInRestraintRegion(r, thetaDeg, lr87, lang87)) return 'RESTRAIN';
   return 'TRIP';
 }

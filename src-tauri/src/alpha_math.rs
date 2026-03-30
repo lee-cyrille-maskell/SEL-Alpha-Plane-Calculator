@@ -42,9 +42,10 @@ pub fn is_in_restraint_region(r: f64, theta_deg: f64, lr_87: f64, lang_87: f64) 
 
 /// Determine the expected result: TRIP, RESTRAIN, or INSIDE_LIMITS
 ///
-/// tolerance: absolute distance from the restraint boundary. Points within
-/// this distance of any boundary edge get INSIDE_LIMITS.
-pub fn determine_result(r: f64, theta_deg: f64, lr_87: f64, lang_87: f64, tolerance: f64) -> String {
+/// tolerance_pct: percentage tolerance (e.g. 5.0 = 5%). Points within this
+/// percentage of a boundary edge (relative to that boundary's radius) get
+/// INSIDE_LIMITS. Per Omicron manual "Check Test Tol." specification.
+pub fn determine_result(r: f64, theta_deg: f64, lr_87: f64, lang_87: f64, tolerance_pct: f64) -> String {
     if lr_87 <= 0.0 {
         return "TRIP".to_string();
     }
@@ -52,21 +53,33 @@ pub fn determine_result(r: f64, theta_deg: f64, lr_87: f64, lang_87: f64, tolera
     let inner_r = 1.0 / lr_87;
     let outer_r = lr_87;
     let half_angle = lang_87 / 2.0;
+    let tol_frac = tolerance_pct / 100.0;
 
-    // Distance to outer circle boundary
-    let dist_outer = (r - outer_r).abs();
-    // Distance to inner circle boundary
-    let dist_inner = (r - inner_r).abs();
+    // Outer circle: tolerance band is ±(outerR * tol%)
+    let outer_tol = outer_r * tol_frac;
+    let near_outer = (r - outer_r).abs() < outer_tol;
 
-    // Angular distance to wedge edge, converted to approximate linear distance at radius r
+    // Inner circle: tolerance band is ±(innerR * tol%)
+    let inner_tol = inner_r * tol_frac;
+    let near_inner = (r - inner_r).abs() < inner_tol;
+
+    // Angular boundary: tolerance is tol% of the point's radius as perpendicular distance
     let ang_dist_deg = angular_distance(theta_deg, 180.0);
     let ang_from_edge = (ang_dist_deg - half_angle).abs();
     let ang_dist_linear = r * (ang_from_edge * PI / 180.0);
+    let ang_tol = r * tol_frac;
+    let near_angle = ang_dist_linear < ang_tol;
 
-    // Minimum distance to any boundary
-    let min_dist = dist_outer.min(dist_inner).min(ang_dist_linear);
+    // Only consider angular proximity if point is within the radial range
+    let in_radial_range = r >= inner_r && r <= outer_r;
+    // Only consider radial proximity if point is within the angular range
+    let in_angular_range = angular_distance(theta_deg, 180.0) <= half_angle;
 
-    if min_dist < tolerance {
+    let inside_limits = (near_outer && in_angular_range)
+        || (near_inner && in_angular_range)
+        || (near_angle && in_radial_range);
+
+    if inside_limits {
         "INSIDE_LIMITS".to_string()
     } else if is_in_restraint_region(r, theta_deg, lr_87, lang_87) {
         "RESTRAIN".to_string()

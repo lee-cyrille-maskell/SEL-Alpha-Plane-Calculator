@@ -25,6 +25,7 @@ pub fn run() {
             commands::delete_test_point,
             commands::clear_test_points,
             commands::undo,
+            commands::redo,
             commands::calculate_currents_cmd,
             commands::export_csv,
         ])

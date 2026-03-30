@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save, message } from '@tauri-apps/plugin-dialog';
-import { initChart, updateTestPoints, updateChartRange, drawRestraintOverlay, getChartDataURI } from './alpha-chart.js';
+import { initChart, updateTestPoints, updateChartRange, drawRestraintOverlay, getChartDataURI, setPreviewPoint, clearPreviewPoint } from './alpha-chart.js';
 import { renderTestCards, setDeleteHandler, testPointsToTSV } from './test-cards.js';
 import { calculateCurrents, determineResult } from './alpha-math.js';
 
@@ -13,6 +13,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('test-date').valueAsDate = new Date();
 
   // Init chart
+  // Size chart square before initializing
+  sizeChartSquare();
+  window.addEventListener('resize', sizeChartSquare);
+
   initChart('alpha-chart', onChartClick);
 
   // Wire up event handlers
@@ -128,6 +132,7 @@ function wireToolbar() {
   document.getElementById('btn-save').addEventListener('click', saveProject);
   document.getElementById('btn-save-as').addEventListener('click', saveProjectAs);
   document.getElementById('btn-undo').addEventListener('click', onUndo);
+  document.getElementById('btn-redo').addEventListener('click', onRedo);
   document.getElementById('btn-export-csv').addEventListener('click', onExportCSV);
   document.getElementById('btn-export-pdf').addEventListener('click', onExportPDF);
   document.getElementById('btn-clear-all').addEventListener('click', onClearAll);
@@ -170,7 +175,7 @@ async function onRelaySettingsChange() {
   try {
     project = await invoke('update_relay_settings', { settings });
     updateChartRange(settings.lr_87);
-    drawRestraintOverlay(settings.lr_87, settings.lang_87);
+    drawRestraintOverlay(settings.lr_87, settings.lang_87, parseFloat(document.getElementById('tolerance').value) || 0.1);
     updateTestPoints(project.test_points);
     renderTestCards(project.test_points, document.getElementById('test-points-list'));
     autoSave();
@@ -193,6 +198,7 @@ async function onTestParamsChange() {
   };
   try {
     project = await invoke('update_test_parameters', { params });
+    drawRestraintOverlay(project.relay_settings.lr_87, project.relay_settings.lang_87, params.tolerance);
     updateTestPoints(project.test_points);
     renderTestCards(project.test_points, document.getElementById('test-points-list'));
     autoSave();
@@ -250,6 +256,8 @@ function wireLivePreview() {
     const result = determineResult(mag, ang, lr87, lang87, tol);
     const preview = document.getElementById('live-preview');
     preview.textContent = `Local IA: ${currents.localIA.mag.toFixed(3)}A \u2220${currents.localIA.ang.toFixed(1)}\u00b0  |  Remote IA: ${currents.remoteIA.mag.toFixed(3)}A \u2220${currents.remoteIA.ang.toFixed(1)}\u00b0  |  Expected: ${result}`;
+    // Show preview dot on chart
+    if (mag > 0) setPreviewPoint(mag, ang);
   };
   magInput.addEventListener('input', updatePreview);
   angInput.addEventListener('input', updatePreview);
@@ -264,10 +272,10 @@ async function onAddTestPoint() {
 
   try {
     project = await invoke('add_test_point', { alphaMag: mag, alphaAngle: ang });
+    clearPreviewPoint();
     updateTestPoints(project.test_points);
     renderTestCards(project.test_points, document.getElementById('test-points-list'));
     autoSave();
-    // Scroll to bottom of test points
     const list = document.getElementById('test-points-list');
     list.scrollTop = list.scrollHeight;
   } catch (e) {
@@ -321,6 +329,19 @@ async function onUndo() {
   }
 }
 
+async function onRedo() {
+  try {
+    const result = await invoke('redo');
+    if (result) {
+      project = result;
+      refreshUI();
+      autoSave();
+    }
+  } catch (e) {
+    console.error('Redo failed:', e);
+  }
+}
+
 // ── Export ───────────────────────────────────────────────────
 
 async function onExportCSV() {
@@ -349,6 +370,7 @@ async function onExportPDF() {
 function wireKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); onUndo(); }
+    if (e.ctrlKey && e.key === 'y') { e.preventDefault(); onRedo(); }
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveProject(); }
     if (e.ctrlKey && e.key === 'o') { e.preventDefault(); promptOpen(); }
     if (e.ctrlKey && e.key === 'n') { e.preventDefault(); newProject(); }
@@ -424,7 +446,7 @@ function refreshUI() {
   // Chart
   updateChartRange(project.relay_settings.lr_87);
   setTimeout(() => {
-    drawRestraintOverlay(project.relay_settings.lr_87, project.relay_settings.lang_87);
+    drawRestraintOverlay(project.relay_settings.lr_87, project.relay_settings.lang_87, project.test_parameters.tolerance);
     updateTestPoints(project.test_points);
   }, 150);
 
@@ -433,6 +455,17 @@ function refreshUI() {
 
   // Live preview
   document.getElementById('entry-alpha-mag').dispatchEvent(new Event('input'));
+}
+
+function sizeChartSquare() {
+  const container = document.querySelector('.chart-container');
+  const wrapper = document.getElementById('alpha-chart-wrapper');
+  if (!container || !wrapper) return;
+  const availW = container.clientWidth;
+  const availH = container.clientHeight;
+  const size = Math.min(availW, availH);
+  wrapper.style.width = size + 'px';
+  wrapper.style.height = size + 'px';
 }
 
 function updateStatus(filePath, saved) {

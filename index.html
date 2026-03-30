@@ -20,6 +20,7 @@
       <button id="btn-save-as" title="Save As...">Save As</button>
       <div class="toolbar-separator"></div>
       <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
       <div class="toolbar-separator"></div>
       <button id="btn-export-pdf" title="Export PDF Report">Export PDF</button>
       <button id="btn-export-csv" title="Export to CSV">Export CSV</button>
@@ -73,7 +74,7 @@
             <label for="frequency">Frequency (Hz)</label>
             <select id="frequency">
               <option value="50">50 Hz</option>
-              <option value="60">60 Hz</option>
+              <option value="60" selected>60 Hz</option>
             </select>
           </div>
           <div class="form-row">
@@ -94,12 +95,12 @@
               <option value="A">Phase A</option>
               <option value="B">Phase B</option>
               <option value="C">Phase C</option>
-              <option value="3P">3-Phase</option>
+              <option value="3P" selected>3-Phase</option>
             </select>
           </div>
           <div class="form-row">
-            <label for="tolerance">Tolerance</label>
-            <input type="number" id="tolerance" step="0.01" min="0" value="0.1" />
+            <label for="tolerance">Check Test Tol. (%)</label>
+            <input type="number" id="tolerance" step="1" min="0" value="5" />
           </div>
         </div>
       </section>
@@ -148,8 +149,9 @@
     <div class="right-area">
       <!-- Alpha Plane Chart -->
       <div class="chart-container">
-        <div class="panel-header">Alpha Plane Visualization</div>
-        <div id="alpha-chart"></div>
+        <div id="alpha-chart-wrapper">
+          <div id="alpha-chart"></div>
+        </div>
       </div>
 
       <!-- Test Point Entry -->
