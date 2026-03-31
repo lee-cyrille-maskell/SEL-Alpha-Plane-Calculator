@@ -159,6 +159,61 @@ pub fn cartesian_to_polar(re: f64, im: f64) -> (f64, f64) {
     (mag, angle)
 }
 
+/// Calculate differential current magnitude for the faulted phase(s).
+/// I_diff = |I_local + I_remote| (phasor sum)
+/// Returns (diff_mag, phase_label).
+pub fn calculate_diff_current(currents: &[(f64, f64); 6], fault_type: &str) -> (f64, String) {
+    let phasor_sum_mag = |local_idx: usize, remote_idx: usize| -> f64 {
+        let (lm, la) = currents[local_idx];
+        let (rm, ra) = currents[remote_idx];
+        let (lx, ly) = polar_to_cartesian(lm, la);
+        let (rx, ry) = polar_to_cartesian(rm, ra);
+        ((lx + rx).powi(2) + (ly + ry).powi(2)).sqrt()
+    };
+
+    match fault_type {
+        "A" => (phasor_sum_mag(0, 3), "A".to_string()),
+        "B" => (phasor_sum_mag(1, 4), "B".to_string()),
+        "C" => (phasor_sum_mag(2, 5), "C".to_string()),
+        "3P" | _ => {
+            let a = phasor_sum_mag(0, 3);
+            let b = phasor_sum_mag(1, 4);
+            let c = phasor_sum_mag(2, 5);
+            let max = a.max(b).max(c);
+            let phase = if max == a { "A" } else if max == b { "B" } else { "C" };
+            (max, phase.to_string())
+        }
+    }
+}
+
+/// Determine diff result: ABOVE_PICKUP, BELOW_PICKUP, or INSIDE_LIMITS
+pub fn determine_diff_result(
+    diff_mag: f64,
+    lpp_87: f64,
+    diff_tol_pct: f64,
+    diff_tol_abs_ma: f64,
+) -> String {
+    let effective_tol = (lpp_87 * diff_tol_pct / 100.0).max(diff_tol_abs_ma / 1000.0);
+    if (diff_mag - lpp_87).abs() < effective_tol {
+        "INSIDE_LIMITS".to_string()
+    } else if diff_mag >= lpp_87 {
+        "ABOVE_PICKUP".to_string()
+    } else {
+        "BELOW_PICKUP".to_string()
+    }
+}
+
+/// Determine overall result from alpha and diff sub-results
+pub fn determine_overall_result(alpha_result: &str, diff_result: &str) -> String {
+    if alpha_result == "INSIDE_LIMITS" || diff_result == "INSIDE_LIMITS" {
+        "INSIDE_LIMITS".to_string()
+    } else if alpha_result == "TRIP" && diff_result == "ABOVE_PICKUP" {
+        "TRIP".to_string()
+    } else {
+        "NO_TRIP".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +241,60 @@ mod tests {
         // Point right at the outer radius boundary
         let result = determine_result(6.0, 180.0, 6.0, 195.0, 0.1);
         assert_eq!(result, "INSIDE_LIMITS");
+    }
+
+    #[test]
+    fn test_diff_current_single_phase() {
+        // Alpha = 1 at 0deg with ref 1A at 0deg -> local=1@0, remote=1@0 -> diff=2A
+        let currents = calculate_currents(1.0, 0.0, 1.0, 0.0, "A");
+        let (diff, phase) = calculate_diff_current(&currents, "A");
+        assert!((diff - 2.0).abs() < 1e-6);
+        assert_eq!(phase, "A");
+    }
+
+    #[test]
+    fn test_diff_current_through_fault() {
+        // Alpha = 1 at 180deg (through fault) -> local=1@0, remote=1@180 -> diff=0
+        let currents = calculate_currents(1.0, 180.0, 1.0, 0.0, "A");
+        let (diff, _) = calculate_diff_current(&currents, "A");
+        assert!(diff < 1e-6);
+    }
+
+    #[test]
+    fn test_diff_result_above_pickup() {
+        assert_eq!(determine_diff_result(1.5, 1.0, 5.0, 20.0), "ABOVE_PICKUP");
+    }
+
+    #[test]
+    fn test_diff_result_below_pickup() {
+        assert_eq!(determine_diff_result(0.5, 1.0, 5.0, 20.0), "BELOW_PICKUP");
+    }
+
+    #[test]
+    fn test_diff_result_inside_limits() {
+        // 1.0 ± 5% = 0.95..1.05, so 1.03 is inside limits
+        assert_eq!(determine_diff_result(1.03, 1.0, 5.0, 20.0), "INSIDE_LIMITS");
+    }
+
+    #[test]
+    fn test_overall_trip() {
+        assert_eq!(determine_overall_result("TRIP", "ABOVE_PICKUP"), "TRIP");
+    }
+
+    #[test]
+    fn test_overall_no_trip_restrain() {
+        assert_eq!(determine_overall_result("RESTRAIN", "ABOVE_PICKUP"), "NO_TRIP");
+    }
+
+    #[test]
+    fn test_overall_no_trip_below_pickup() {
+        assert_eq!(determine_overall_result("TRIP", "BELOW_PICKUP"), "NO_TRIP");
+    }
+
+    #[test]
+    fn test_overall_inside_limits() {
+        assert_eq!(determine_overall_result("INSIDE_LIMITS", "ABOVE_PICKUP"), "INSIDE_LIMITS");
+        assert_eq!(determine_overall_result("TRIP", "INSIDE_LIMITS"), "INSIDE_LIMITS");
     }
 
     #[test]

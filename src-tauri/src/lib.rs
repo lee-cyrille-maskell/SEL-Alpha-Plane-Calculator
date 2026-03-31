@@ -28,6 +28,9 @@ pub fn run() {
             commands::redo,
             commands::calculate_currents_cmd,
             commands::export_csv,
+            commands::edit_test_point,
+            commands::duplicate_test_point,
+            commands::move_test_point,
         ])
         .run(tauri::generate_context!())
         .expect("error running tauri application");

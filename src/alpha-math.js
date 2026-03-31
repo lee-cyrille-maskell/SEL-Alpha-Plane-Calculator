@@ -114,3 +114,46 @@ export function calculateCurrents(alphaMag, alphaAngle, refMag, refAngle, faultT
       };
   }
 }
+
+// Phasor sum magnitude of two polar values
+function phasorSumMag(m1, a1, m2, a2) {
+  const { re: x1, im: y1 } = polarToCartesian(m1, a1);
+  const { re: x2, im: y2 } = polarToCartesian(m2, a2);
+  return Math.sqrt((x1 + x2) ** 2 + (y1 + y2) ** 2);
+}
+
+// Calculate differential current for the faulted phase(s)
+// currents: object from calculateCurrents
+// Returns { mag, phase }
+export function calculateDiffCurrent(currents, faultType) {
+  switch (faultType) {
+    case 'A':
+      return { mag: phasorSumMag(currents.localIA.mag, currents.localIA.ang, currents.remoteIA.mag, currents.remoteIA.ang), phase: 'A' };
+    case 'B':
+      return { mag: phasorSumMag(currents.localIB.mag, currents.localIB.ang, currents.remoteIB.mag, currents.remoteIB.ang), phase: 'B' };
+    case 'C':
+      return { mag: phasorSumMag(currents.localIC.mag, currents.localIC.ang, currents.remoteIC.mag, currents.remoteIC.ang), phase: 'C' };
+    case '3P':
+    default: {
+      const a = phasorSumMag(currents.localIA.mag, currents.localIA.ang, currents.remoteIA.mag, currents.remoteIA.ang);
+      const b = phasorSumMag(currents.localIB.mag, currents.localIB.ang, currents.remoteIB.mag, currents.remoteIB.ang);
+      const c = phasorSumMag(currents.localIC.mag, currents.localIC.ang, currents.remoteIC.mag, currents.remoteIC.ang);
+      const max = Math.max(a, b, c);
+      const phase = max === a ? 'A' : max === b ? 'B' : 'C';
+      return { mag: max, phase };
+    }
+  }
+}
+
+export function determineDiffResult(diffMag, lpp87, diffTolPct, diffTolAbsMa) {
+  const effectiveTol = Math.max(lpp87 * diffTolPct / 100, diffTolAbsMa / 1000);
+  if (Math.abs(diffMag - lpp87) < effectiveTol) return 'INSIDE_LIMITS';
+  if (diffMag >= lpp87) return 'ABOVE_PICKUP';
+  return 'BELOW_PICKUP';
+}
+
+export function determineOverallResult(alphaResult, diffResult) {
+  if (alphaResult === 'INSIDE_LIMITS' || diffResult === 'INSIDE_LIMITS') return 'INSIDE_LIMITS';
+  if (alphaResult === 'TRIP' && diffResult === 'ABOVE_PICKUP') return 'TRIP';
+  return 'NO_TRIP';
+}

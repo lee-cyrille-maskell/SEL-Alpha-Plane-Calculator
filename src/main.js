@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open, save, message } from '@tauri-apps/plugin-dialog';
-import { initChart, updateTestPoints, updateChartRange, drawRestraintOverlay, getChartDataURI, setPreviewPoint, clearPreviewPoint } from './alpha-chart.js';
-import { renderTestCards, setDeleteHandler, testPointsToTSV } from './test-cards.js';
-import { calculateCurrents, determineResult } from './alpha-math.js';
+import { initChart, updateTestPoints, updateChartRange, drawRestraintOverlay, getChartDataURI, setPreviewPoint, clearPreviewPoint, setSelectedPoint, clearSelectedPoint } from './alpha-chart.js';
+import { renderTestCards, setDeleteHandler, setSelectHandler, setEditHandler, setDuplicateHandler, setMoveHandler, testPointsToTSV } from './test-cards.js';
+import { calculateCurrents, determineResult, calculateDiffCurrent, determineDiffResult, determineOverallResult } from './alpha-math.js';
 
 let project = null;
 
@@ -24,6 +24,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   wireSettingsAutoSave();
   wireTestEntry();
   setDeleteHandler(onDeleteTestPoint);
+  setSelectHandler(onSelectTestPoint);
+  setEditHandler(onEditTestPoint);
+  setDuplicateHandler(onDuplicateTestPoint);
+  setMoveHandler(onMoveTestPoint);
   wireKeyboardShortcuts();
   wireLivePreview();
 
@@ -149,7 +153,7 @@ function wireSettingsAutoSave() {
   }
 
   // Test parameters
-  const testInputs = ['ref-i-mag', 'ref-i-ang', 'frequency', 'prefault-time', 'max-fault-time', 'delay-time', 'fault-type', 'tolerance'];
+  const testInputs = ['ref-i-mag', 'ref-i-ang', 'frequency', 'prefault-time', 'max-fault-time', 'delay-time', 'fault-type', 'tolerance', 'diff-tol-pct', 'diff-tol-ma'];
   for (const id of testInputs) {
     const el = document.getElementById(id);
     el.addEventListener('blur', onTestParamsChange);
@@ -194,7 +198,9 @@ async function onTestParamsChange() {
     max_fault_time_s: parseFloat(document.getElementById('max-fault-time').value) || 5.0,
     delay_time_s: parseFloat(document.getElementById('delay-time').value) || 0.5,
     fault_type: document.getElementById('fault-type').value || 'A',
-    tolerance: parseFloat(document.getElementById('tolerance').value) || 0.1,
+    tolerance: parseFloat(document.getElementById('tolerance').value) || 5.0,
+    diff_tolerance_pct: parseFloat(document.getElementById('diff-tol-pct').value) || 5.0,
+    diff_tolerance_abs_ma: parseFloat(document.getElementById('diff-tol-ma').value) || 20.0,
   };
   try {
     project = await invoke('update_test_parameters', { params });
@@ -252,10 +258,25 @@ function wireLivePreview() {
     const lang87 = parseFloat(document.getElementById('lang87').value) || 195;
     const tol = parseFloat(document.getElementById('tolerance').value) || 0.1;
 
+    const lpp87 = parseFloat(document.getElementById('lpp87').value) || 1.0;
+    const diffTolPct = parseFloat(document.getElementById('diff-tol-pct').value) || 5.0;
+    const diffTolMa = parseFloat(document.getElementById('diff-tol-ma').value) || 20.0;
+
     const currents = calculateCurrents(mag, ang, refMag, refAng, faultType);
-    const result = determineResult(mag, ang, lr87, lang87, tol);
+    const alphaResult = determineResult(mag, ang, lr87, lang87, tol);
+    const diff = calculateDiffCurrent(currents, faultType);
+    const diffResult = determineDiffResult(diff.mag, lpp87, diffTolPct, diffTolMa);
+    const overall = determineOverallResult(alphaResult, diffResult);
+
+    const alphaColors = { TRIP: '#ff1744', RESTRAIN: '#2979ff', INSIDE_LIMITS: '#f59e0b' };
+    const alphaLabels = { TRIP: 'Operate', RESTRAIN: 'Restrain', INSIDE_LIMITS: 'Tol. Band' };
+    const diffColors = { ABOVE_PICKUP: '#ff1744', BELOW_PICKUP: '#2979ff', INSIDE_LIMITS: '#f59e0b' };
+    const diffLabels = { ABOVE_PICKUP: 'Above Pickup', BELOW_PICKUP: 'Below Pickup', INSIDE_LIMITS: 'Tol. Band' };
+    const overallColors = { TRIP: '#ff1744', NO_TRIP: '#2979ff', INSIDE_LIMITS: '#f59e0b' };
+    const overallLabels = { TRIP: 'TRIP', NO_TRIP: 'NO TRIP', INSIDE_LIMITS: 'INSIDE LIMITS' };
+
     const preview = document.getElementById('live-preview');
-    preview.textContent = `Local IA: ${currents.localIA.mag.toFixed(3)}A \u2220${currents.localIA.ang.toFixed(1)}\u00b0  |  Remote IA: ${currents.remoteIA.mag.toFixed(3)}A \u2220${currents.remoteIA.ang.toFixed(1)}\u00b0  |  Expected: ${result}`;
+    preview.innerHTML = `<span style="color:${alphaColors[alphaResult]};font-weight:700">Alpha: ${alphaLabels[alphaResult]}</span> | <span style="color:${diffColors[diffResult]};font-weight:700">Diff: ${diffLabels[diffResult]} (${diff.mag.toFixed(3)}A)</span> | <span style="color:${overallColors[overall]};font-weight:700">${overallLabels[overall]}</span>`;
     // Show preview dot on chart
     if (mag > 0) setPreviewPoint(mag, ang);
   };
@@ -290,10 +311,55 @@ function onChartClick(mag, angleDeg) {
   document.getElementById('entry-alpha-mag').dispatchEvent(new Event('input'));
 }
 
+function onSelectTestPoint(tp) {
+  if (tp) {
+    setSelectedPoint(tp.alpha_magnitude, tp.alpha_angle_deg);
+  } else {
+    clearSelectedPoint();
+  }
+}
+
+async function onEditTestPoint(id, alphaMag, alphaAngle, customRefCurrentMag, customFaultType) {
+  if (!project) return;
+  try {
+    project = await invoke('edit_test_point', { id, alphaMag, alphaAngle, customRefCurrentMag, customFaultType });
+    updateTestPoints(project.test_points);
+    renderTestCards(project.test_points, document.getElementById('test-points-list'));
+    autoSave();
+  } catch (e) {
+    console.error('Failed to edit test point:', e);
+  }
+}
+
+async function onDuplicateTestPoint(id) {
+  if (!project) return;
+  try {
+    project = await invoke('duplicate_test_point', { id });
+    updateTestPoints(project.test_points);
+    renderTestCards(project.test_points, document.getElementById('test-points-list'));
+    autoSave();
+  } catch (e) {
+    console.error('Failed to duplicate test point:', e);
+  }
+}
+
+async function onMoveTestPoint(id, direction) {
+  if (!project) return;
+  try {
+    project = await invoke('move_test_point', { id, direction });
+    updateTestPoints(project.test_points);
+    renderTestCards(project.test_points, document.getElementById('test-points-list'));
+    autoSave();
+  } catch (e) {
+    console.error('Failed to move test point:', e);
+  }
+}
+
 async function onDeleteTestPoint(id) {
   if (!project) return;
   try {
     project = await invoke('delete_test_point', { id });
+    clearSelectedPoint();
     updateTestPoints(project.test_points);
     renderTestCards(project.test_points, document.getElementById('test-points-list'));
     autoSave();
@@ -432,6 +498,8 @@ function refreshUI() {
   document.getElementById('delay-time').value = project.test_parameters.delay_time_s;
   document.getElementById('fault-type').value = project.test_parameters.fault_type;
   document.getElementById('tolerance').value = project.test_parameters.tolerance;
+  document.getElementById('diff-tol-pct').value = project.test_parameters.diff_tolerance_pct || 5;
+  document.getElementById('diff-tol-ma').value = project.test_parameters.diff_tolerance_abs_ma || 20;
 
   // Report info
   document.getElementById('relay-type').value = project.report_info.relay_type;

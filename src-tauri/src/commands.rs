@@ -57,7 +57,18 @@ pub fn get_file_path(state: State<'_, Mutex<AppState>>) -> Result<Option<String>
 #[tauri::command]
 pub fn open_project(state: State<'_, Mutex<AppState>>, path: String) -> Result<AlphaPlaneProject, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))?;
-    let project: AlphaPlaneProject = serde_json::from_str(&content).map_err(|e| format!("Failed to parse file: {}", e))?;
+    let mut project: AlphaPlaneProject = serde_json::from_str(&content).map_err(|e| format!("Failed to parse file: {}", e))?;
+    // Migration: v1 files need diff tolerance defaults and recalculation
+    if project.version == "1.0.0" || project.test_parameters.diff_tolerance_pct == 0.0 {
+        if project.test_parameters.diff_tolerance_pct == 0.0 {
+            project.test_parameters.diff_tolerance_pct = 5.0;
+        }
+        if project.test_parameters.diff_tolerance_abs_ma == 0.0 {
+            project.test_parameters.diff_tolerance_abs_ma = 20.0;
+        }
+        project.version = "2.0.0".to_string();
+        recalculate_test_points(&mut project);
+    }
     let mut s = state.lock().map_err(|e| e.to_string())?;
     s.current_project = Some(project.clone());
     s.current_file_path = Some(path);
@@ -142,41 +153,46 @@ pub fn add_test_point(
     let project = s.current_project.as_mut().ok_or("No project open")?;
 
     let point_number = project.test_points.len() as u32 + 1;
+    let fault_type = &project.test_parameters.fault_type;
     let currents = alpha_math::calculate_currents(
-        alpha_mag,
-        alpha_angle,
+        alpha_mag, alpha_angle,
         project.test_parameters.reference_current_mag,
         project.test_parameters.reference_current_angle,
-        &project.test_parameters.fault_type,
+        fault_type,
     );
-    let expected = alpha_math::determine_result(
-        alpha_mag,
-        alpha_angle,
-        project.relay_settings.lr_87,
-        project.relay_settings.lang_87,
+    let alpha_result = alpha_math::determine_result(
+        alpha_mag, alpha_angle,
+        project.relay_settings.lr_87, project.relay_settings.lang_87,
         project.test_parameters.tolerance,
     );
+    let (diff_mag, diff_phase) = alpha_math::calculate_diff_current(&currents, fault_type);
+    let diff_result = alpha_math::determine_diff_result(
+        diff_mag, project.relay_settings.lpp_87,
+        project.test_parameters.diff_tolerance_pct, project.test_parameters.diff_tolerance_abs_ma,
+    );
+    let overall_result = alpha_math::determine_overall_result(&alpha_result, &diff_result);
 
     let test_point = TestPoint {
         _id: uuid::Uuid::new_v4().to_string(),
         point_number,
         alpha_magnitude: alpha_mag,
         alpha_angle_deg: alpha_angle,
-        local_ia_mag: currents[0].0,
-        local_ia_ang: currents[0].1,
-        local_ib_mag: currents[1].0,
-        local_ib_ang: currents[1].1,
-        local_ic_mag: currents[2].0,
-        local_ic_ang: currents[2].1,
-        remote_ia_mag: currents[3].0,
-        remote_ia_ang: currents[3].1,
-        remote_ib_mag: currents[4].0,
-        remote_ib_ang: currents[4].1,
-        remote_ic_mag: currents[5].0,
-        remote_ic_ang: currents[5].1,
-        expected_result: expected,
+        local_ia_mag: currents[0].0, local_ia_ang: currents[0].1,
+        local_ib_mag: currents[1].0, local_ib_ang: currents[1].1,
+        local_ic_mag: currents[2].0, local_ic_ang: currents[2].1,
+        remote_ia_mag: currents[3].0, remote_ia_ang: currents[3].1,
+        remote_ib_mag: currents[4].0, remote_ib_ang: currents[4].1,
+        remote_ic_mag: currents[5].0, remote_ic_ang: currents[5].1,
+        expected_result: overall_result.clone(),
         actual_result: None,
         notes: String::new(),
+        custom_ref_current_mag: None,
+        custom_fault_type: None,
+        diff_current_mag: diff_mag,
+        diff_current_phase: diff_phase,
+        alpha_result,
+        diff_result,
+        overall_result,
     };
 
     project.test_points.push(test_point);
@@ -275,7 +291,7 @@ pub fn export_csv(state: State<'_, Mutex<AppState>>, path: String) -> Result<(),
         "Test #", "Alpha Mag", "Alpha Angle",
         "Local IA Mag", "Local IA Ang", "Local IB Mag", "Local IB Ang", "Local IC Mag", "Local IC Ang",
         "Remote IA Mag", "Remote IA Ang", "Remote IB Mag", "Remote IB Ang", "Remote IC Mag", "Remote IC Ang",
-        "Expected Result",
+        "Alpha Result", "Diff Current (A)", "Diff Phase", "Diff Result", "Overall Result",
     ]).map_err(|e| format!("CSV error: {}", e))?;
 
     for p in &project.test_points {
@@ -289,7 +305,11 @@ pub fn export_csv(state: State<'_, Mutex<AppState>>, path: String) -> Result<(),
             format!("{:.3}", p.remote_ia_mag), format!("{:.2}", p.remote_ia_ang),
             format!("{:.3}", p.remote_ib_mag), format!("{:.2}", p.remote_ib_ang),
             format!("{:.3}", p.remote_ic_mag), format!("{:.2}", p.remote_ic_ang),
-            p.expected_result.clone(),
+            p.alpha_result.clone(),
+            format!("{:.4}", p.diff_current_mag),
+            p.diff_current_phase.clone(),
+            p.diff_result.clone(),
+            p.overall_result.clone(),
         ]).map_err(|e| format!("CSV error: {}", e))?;
     }
 
@@ -297,33 +317,98 @@ pub fn export_csv(state: State<'_, Mutex<AppState>>, path: String) -> Result<(),
     Ok(())
 }
 
+fn recalculate_single_point(point: &mut TestPoint, project_params: &TestParameters, relay: &RelaySettings) {
+    let ref_mag = point.custom_ref_current_mag.unwrap_or(project_params.reference_current_mag);
+    let fault_type_str = point.custom_fault_type.as_deref().unwrap_or(&project_params.fault_type);
+    let currents = alpha_math::calculate_currents(
+        point.alpha_magnitude, point.alpha_angle_deg,
+        ref_mag, project_params.reference_current_angle, fault_type_str,
+    );
+    point.local_ia_mag = currents[0].0; point.local_ia_ang = currents[0].1;
+    point.local_ib_mag = currents[1].0; point.local_ib_ang = currents[1].1;
+    point.local_ic_mag = currents[2].0; point.local_ic_ang = currents[2].1;
+    point.remote_ia_mag = currents[3].0; point.remote_ia_ang = currents[3].1;
+    point.remote_ib_mag = currents[4].0; point.remote_ib_ang = currents[4].1;
+    point.remote_ic_mag = currents[5].0; point.remote_ic_ang = currents[5].1;
+    point.alpha_result = alpha_math::determine_result(
+        point.alpha_magnitude, point.alpha_angle_deg,
+        relay.lr_87, relay.lang_87, project_params.tolerance,
+    );
+    let (diff_mag, diff_phase) = alpha_math::calculate_diff_current(&currents, fault_type_str);
+    point.diff_current_mag = diff_mag;
+    point.diff_current_phase = diff_phase;
+    point.diff_result = alpha_math::determine_diff_result(
+        diff_mag, relay.lpp_87,
+        project_params.diff_tolerance_pct, project_params.diff_tolerance_abs_ma,
+    );
+    point.overall_result = alpha_math::determine_overall_result(&point.alpha_result, &point.diff_result);
+    point.expected_result = point.overall_result.clone();
+}
+
 fn recalculate_test_points(project: &mut AlphaPlaneProject) {
+    let params = project.test_parameters.clone();
+    let relay = project.relay_settings.clone();
     for point in &mut project.test_points {
-        let currents = alpha_math::calculate_currents(
-            point.alpha_magnitude,
-            point.alpha_angle_deg,
-            project.test_parameters.reference_current_mag,
-            project.test_parameters.reference_current_angle,
-            &project.test_parameters.fault_type,
-        );
-        point.local_ia_mag = currents[0].0;
-        point.local_ia_ang = currents[0].1;
-        point.local_ib_mag = currents[1].0;
-        point.local_ib_ang = currents[1].1;
-        point.local_ic_mag = currents[2].0;
-        point.local_ic_ang = currents[2].1;
-        point.remote_ia_mag = currents[3].0;
-        point.remote_ia_ang = currents[3].1;
-        point.remote_ib_mag = currents[4].0;
-        point.remote_ib_ang = currents[4].1;
-        point.remote_ic_mag = currents[5].0;
-        point.remote_ic_ang = currents[5].1;
-        point.expected_result = alpha_math::determine_result(
-            point.alpha_magnitude,
-            point.alpha_angle_deg,
-            project.relay_settings.lr_87,
-            project.relay_settings.lang_87,
-            project.test_parameters.tolerance,
-        );
+        recalculate_single_point(point, &params, &relay);
     }
+}
+
+#[tauri::command]
+pub fn edit_test_point(
+    state: State<'_, Mutex<AppState>>,
+    id: String,
+    alpha_mag: f64,
+    alpha_angle: f64,
+    custom_ref_current_mag: Option<f64>,
+    custom_fault_type: Option<String>,
+) -> Result<AlphaPlaneProject, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.push_undo();
+    let project = s.current_project.as_mut().ok_or("No project open")?;
+    let params = project.test_parameters.clone();
+    let relay = project.relay_settings.clone();
+    let point = project.test_points.iter_mut().find(|p| p._id == id)
+        .ok_or("Test point not found")?;
+    point.alpha_magnitude = alpha_mag;
+    point.alpha_angle_deg = alpha_angle;
+    point.custom_ref_current_mag = custom_ref_current_mag;
+    point.custom_fault_type = custom_fault_type;
+    recalculate_single_point(point, &params, &relay);
+    Ok(project.clone())
+}
+
+#[tauri::command]
+pub fn duplicate_test_point(state: State<'_, Mutex<AppState>>, id: String) -> Result<AlphaPlaneProject, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.push_undo();
+    let project = s.current_project.as_mut().ok_or("No project open")?;
+    let idx = project.test_points.iter().position(|p| p._id == id)
+        .ok_or("Test point not found")?;
+    let mut clone = project.test_points[idx].clone();
+    clone._id = uuid::Uuid::new_v4().to_string();
+    project.test_points.insert(idx + 1, clone);
+    // Renumber
+    for (i, p) in project.test_points.iter_mut().enumerate() {
+        p.point_number = i as u32 + 1;
+    }
+    Ok(project.clone())
+}
+
+#[tauri::command]
+pub fn move_test_point(state: State<'_, Mutex<AppState>>, id: String, direction: String) -> Result<AlphaPlaneProject, String> {
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.push_undo();
+    let project = s.current_project.as_mut().ok_or("No project open")?;
+    let idx = project.test_points.iter().position(|p| p._id == id)
+        .ok_or("Test point not found")?;
+    match direction.as_str() {
+        "up" if idx > 0 => { project.test_points.swap(idx, idx - 1); }
+        "down" if idx < project.test_points.len() - 1 => { project.test_points.swap(idx, idx + 1); }
+        _ => {}
+    }
+    // Renumber
+    for (i, p) in project.test_points.iter_mut().enumerate() {
+        p.point_number = i as u32 + 1;
+    }
+    Ok(project.clone())
 }

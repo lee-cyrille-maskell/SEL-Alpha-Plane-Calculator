@@ -194,6 +194,30 @@ body {
   width: 100%;
   height: 100%;
 }
+#btn-reset-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid #bbb;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+#btn-reset-zoom:hover { opacity: 1; background: #fff; }
+#zoom-hint {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: #999;
+  pointer-events: none;
+  white-space: nowrap;
+}
 
 /* TEST ENTRY */
 .test-entry {
@@ -276,6 +300,10 @@ body {
   border-color: var(--trip-red);
   background: var(--trip-red-bg);
 }
+.test-card.no-trip {
+  border-color: var(--restrain-blue);
+  background: var(--restrain-blue-bg);
+}
 .test-card.restrain {
   border-color: var(--restrain-blue);
   background: var(--restrain-blue-bg);
@@ -284,34 +312,61 @@ body {
   border-color: var(--limits-yellow);
   background: var(--limits-yellow-bg);
 }
+.test-card.selected {
+  outline: 3px solid #333;
+  outline-offset: -1px;
+}
+.test-card { cursor: pointer; }
 
 .test-card-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding: 4px 8px;
   background: rgba(0,0,0,0.04);
   border-bottom: 1px solid rgba(0,0,0,0.08);
+  gap: 6px;
 }
 .test-card-header .test-num {
   font-weight: 700;
   font-family: 'Segoe UI', sans-serif;
+  white-space: nowrap;
 }
 .test-card-header .alpha-info {
   font-size: 11px;
   color: var(--text-secondary);
+  flex: 1;
 }
-.test-card-delete {
+.test-card-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.card-btn {
   background: none;
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  font-size: 16px;
+  font-size: 13px;
   line-height: 1;
-  padding: 0 4px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  opacity: 0.5;
 }
-.test-card-delete:hover {
-  color: var(--trip-red);
+.card-btn:hover {
+  opacity: 1;
+  background: rgba(0,0,0,0.08);
+}
+.card-btn.btn-delete:hover { color: var(--trip-red); }
+.custom-badge {
+  font-size: 9px;
+  background: var(--plt-orange);
+  color: #fff;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  vertical-align: middle;
+  margin-left: 4px;
 }
 
 .test-card-body {
@@ -352,24 +407,71 @@ body {
   text-align: right;
 }
 
-.test-card-result {
-  text-align: center;
-  padding: 4px;
-  font-weight: 700;
-  font-family: 'Segoe UI', sans-serif;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
+.test-card-results {
   border-top: 1px solid rgba(0,0,0,0.08);
+  padding: 4px 8px;
 }
-.test-card.trip .test-card-result {
-  color: var(--trip-red);
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 0;
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 11px;
 }
-.test-card.restrain .test-card-result {
-  color: var(--restrain-blue);
+.result-row .result-label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 45px;
 }
-.test-card.inside-limits .test-card-result {
-  color: var(--limits-yellow);
+.result-row .result-value {
+  font-weight: 700;
+  text-align: right;
+}
+.result-row.result-overall {
+  border-top: 1px solid rgba(0,0,0,0.06);
+  margin-top: 2px;
+  padding-top: 3px;
+}
+.result-row.result-overall .result-value {
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+/* EDIT PANEL */
+.test-card-edit-panel {
+  border-top: 1px solid rgba(0,0,0,0.08);
+  padding: 6px 8px;
+  background: rgba(0,0,0,0.02);
+  font-family: 'Segoe UI', sans-serif;
+  font-size: 11px;
+}
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.edit-row:last-child { margin-bottom: 0; }
+.edit-row label {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 10px;
+  min-width: 38px;
+}
+.edit-row input, .edit-row select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: 'Consolas', monospace;
+}
+.edit-row input { width: 70px; }
+.edit-row select { width: 75px; }
+.btn-save-edit {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 10px;
 }
 
 /* STATUS BAR */

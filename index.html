@@ -99,8 +99,16 @@
             </select>
           </div>
           <div class="form-row">
-            <label for="tolerance">Check Test Tol. (%)</label>
+            <label for="tolerance">Alpha Tol. (%)</label>
             <input type="number" id="tolerance" step="1" min="0" value="5" />
+          </div>
+          <div class="form-row">
+            <label for="diff-tol-pct">Diff Tol. (%)</label>
+            <input type="number" id="diff-tol-pct" step="1" min="0" value="5" />
+          </div>
+          <div class="form-row">
+            <label for="diff-tol-ma">Diff Tol. (mA)</label>
+            <input type="number" id="diff-tol-ma" step="1" min="0" value="20" />
           </div>
         </div>
       </section>
@@ -151,6 +159,8 @@
       <div class="chart-container">
         <div id="alpha-chart-wrapper">
           <div id="alpha-chart"></div>
+          <button id="btn-reset-zoom" title="Reset zoom (double-click chart)">Reset</button>
+          <div id="zoom-hint">Scroll: zoom &bull; Right-drag: pan &bull; Dbl-click: reset</div>
         </div>
       </div>
 

@@ -7,6 +7,17 @@ let currentLR = 6.0;
 let currentLANG = 195.0;
 let currentTolerance = 0.1;
 
+// Custom zoom/pan state — always keeps X and Y ranges equal
+let viewCenterX = 0;
+let viewCenterY = 0;
+let viewHalfRange = 7.5; // default for lr87=6
+let defaultHalfRange = 7.5;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panStartCenterX = 0;
+let panStartCenterY = 0;
+
 export function initChart(containerId, clickHandler) {
   onChartClick = clickHandler;
   const container = document.getElementById(containerId);
@@ -15,31 +26,111 @@ export function initChart(containerId, clickHandler) {
   const options = buildChartOptions(currentLR, currentLANG, currentTolerance);
   chart = new ApexCharts(container, options);
   chart.render().then(() => {
-    // Use mousedown on the parent wrapper - guaranteed to fire
     const wrapper = document.getElementById('alpha-chart-wrapper');
     if (wrapper) {
-      wrapper.addEventListener('mousedown', handleMouseClick);
+      wrapper.addEventListener('mousedown', handleMouseDown);
+      wrapper.addEventListener('wheel', handleWheel, { passive: false });
+      wrapper.addEventListener('dblclick', handleReset);
+      wrapper.addEventListener('contextmenu', (e) => e.preventDefault());
     }
+    const resetBtn = document.getElementById('btn-reset-zoom');
+    if (resetBtn) resetBtn.addEventListener('click', handleReset);
   });
   return chart;
 }
 
-function handleMouseClick(event) {
-  if (!onChartClick || !chart) return;
-  const g = chart.w.globals;
-  if (!g || g.minX === undefined || isNaN(g.minX)) return;
-
-  // Find the plot area rect
+// Convert pixel position on chart grid to data coordinates
+function pixelToData(clientX, clientY) {
   const gridEl = document.querySelector('#alpha-chart .apexcharts-grid');
-  if (!gridEl) return;
+  if (!gridEl) return null;
   const rect = gridEl.getBoundingClientRect();
-  const px = event.clientX - rect.left;
-  const py = event.clientY - rect.top;
-  if (px < 0 || py < 0 || px > rect.width || py > rect.height) return;
-
+  const px = clientX - rect.left;
+  const py = clientY - rect.top;
+  const g = chart.w.globals;
   const dataX = g.minX + (px / rect.width) * (g.maxX - g.minX);
   const dataY = g.maxY - (py / rect.height) * (g.maxY - g.minY);
-  const { mag, angleDeg } = cartesianToPolar(dataX, dataY);
+  return { dataX, dataY, inBounds: px >= 0 && py >= 0 && px <= rect.width && py <= rect.height };
+}
+
+function applyView() {
+  if (!chart) return;
+  chart.updateOptions({
+    xaxis: { min: viewCenterX - viewHalfRange, max: viewCenterX + viewHalfRange },
+    yaxis: { min: viewCenterY - viewHalfRange, max: viewCenterY + viewHalfRange },
+  }, false, false);
+}
+
+function handleMouseDown(event) {
+  // Right-click or middle-click: start panning
+  if (event.button === 2 || event.button === 1) {
+    event.preventDefault();
+    isPanning = true;
+    panStartX = event.clientX;
+    panStartY = event.clientY;
+    panStartCenterX = viewCenterX;
+    panStartCenterY = viewCenterY;
+    document.body.style.cursor = 'grabbing';
+
+    const onMouseMove = (e) => {
+      const gridEl = document.querySelector('#alpha-chart .apexcharts-grid');
+      if (!gridEl) return;
+      const rect = gridEl.getBoundingClientRect();
+      const dx = (e.clientX - panStartX) / rect.width * (viewHalfRange * 2);
+      const dy = (e.clientY - panStartY) / rect.height * (viewHalfRange * 2);
+      viewCenterX = panStartCenterX - dx;
+      viewCenterY = panStartCenterY + dy; // inverted Y
+      applyView();
+    };
+
+    const onMouseUp = () => {
+      isPanning = false;
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    return;
+  }
+
+  // Left-click: add test point (existing behavior)
+  if (event.button === 0 && !isPanning) {
+    handleMouseClick(event);
+  }
+}
+
+function handleWheel(event) {
+  event.preventDefault();
+  if (!chart) return;
+
+  const pos = pixelToData(event.clientX, event.clientY);
+  if (!pos || !pos.inBounds) return;
+
+  const zoomFactor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
+  const newHalfRange = Math.min(Math.max(viewHalfRange * zoomFactor, 0.1), 100);
+
+  // Zoom toward cursor: shift center so the data point under cursor stays put
+  const scale = newHalfRange / viewHalfRange;
+  viewCenterX = pos.dataX + (viewCenterX - pos.dataX) * scale;
+  viewCenterY = pos.dataY + (viewCenterY - pos.dataY) * scale;
+  viewHalfRange = newHalfRange;
+
+  applyView();
+}
+
+function handleReset() {
+  viewCenterX = 0;
+  viewCenterY = 0;
+  viewHalfRange = defaultHalfRange;
+  applyView();
+}
+
+function handleMouseClick(event) {
+  if (!onChartClick || !chart) return;
+  const pos = pixelToData(event.clientX, event.clientY);
+  if (!pos || !pos.inBounds) return;
+  const { mag, angleDeg } = cartesianToPolar(pos.dataX, pos.dataY);
   onChartClick(mag, angleDeg);
 }
 
@@ -131,7 +222,8 @@ function generateAllSeries(lr87, lang87, tolerance) {
 // 7: Trip (red scatter)
 // 8: Restrain (blue scatter)
 // 9: Inside Limits (amber scatter)
-// 10: Preview (gray scatter)
+// 10: Selected (outline ring)
+// 11: Preview (gray scatter)
 
 function buildChartOptions(lr87, lang87, tolerance) {
   const range = lr87 + 1.5;
@@ -155,8 +247,9 @@ function buildChartOptions(lr87, lang87, tolerance) {
       { name: '87LR Circle', data: bd.outerCircle, type: 'line' },
       { name: '1/87LR Circle', data: bd.innerCircle, type: 'line' },
       { name: 'Trip', data: [], type: 'scatter' },
-      { name: 'Restrain', data: [], type: 'scatter' },
+      { name: 'No Trip', data: [], type: 'scatter' },
       { name: 'Inside Limits', data: [], type: 'scatter' },
+      { name: 'Selected', data: [], type: 'scatter' },
       { name: 'Preview', data: [], type: 'scatter' },
     ],
     colors: [
@@ -170,20 +263,21 @@ function buildChartOptions(lr87, lang87, tolerance) {
       '#ff1744',  // 7 trip
       '#2979ff',  // 8 restrain
       '#f59e0b',  // 9 inside limits
-      '#888888',  // 10 preview
+      '#333333',  // 10 selected (ring outline)
+      '#888888',  // 11 preview
     ],
     stroke: {
-      width:     [4, 2.5, 2.5, 2.5, 2.5, 1, 1, 0, 0, 0, 0],
-      dashArray: [0, 0,   0,   0,   0,   6, 6, 0, 0, 0, 0],
+      width:     [4, 2.5, 2.5, 2.5, 2.5, 1, 1, 0, 0, 0, 3, 0],
+      dashArray: [0, 0,   0,   0,   0,   6, 6, 0, 0, 0, 0, 0],
       curve: 'straight',
     },
     fill: {
-      opacity: [0.05, 0.15, 0.15, 0.15, 0.15, 0, 0, 1, 1, 1, 1],
+      opacity: [0.05, 0.15, 0.15, 0.15, 0.15, 0, 0, 1, 1, 1, 0, 1],
     },
     markers: {
-      size:        [0, 0, 0, 0, 0, 0, 0, 9, 9, 9, 11],
-      strokeWidth: [0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 3],
-      strokeColors: '#fff',
+      size:        [0, 0, 0, 0, 0, 0, 0, 9, 9, 9, 15, 11],
+      strokeWidth: [0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 3,  3],
+      strokeColors: ['#fff','#fff','#fff','#fff','#fff','#fff','#fff','#fff','#fff','#fff','#333','#fff'],
       hover: { sizeOffset: 3 },
     },
     dataLabels: {
@@ -191,11 +285,19 @@ function buildChartOptions(lr87, lang87, tolerance) {
       enabledOnSeries: [7, 8, 9],
       formatter: function (val, opts) {
         const point = opts.w.config.series[opts.seriesIndex]?.data[opts.dataPointIndex];
-        return point?.meta?.pointNum || '';
+        return point?.meta?.pointNum ? `#${point.meta.pointNum}` : '';
       },
-      style: { fontSize: '10px', fontWeight: 700, colors: ['#333'] },
-      background: { enabled: true, foreColor: '#333', borderRadius: 2, padding: 2, opacity: 0.8, borderWidth: 0 },
-      offsetY: -14,
+      style: { fontSize: '11px', fontWeight: 700, colors: ['#222'] },
+      background: {
+        enabled: true,
+        foreColor: '#222',
+        padding: 4,
+        borderRadius: 3,
+        borderWidth: 1,
+        borderColor: '#999',
+        opacity: 0.95,
+      },
+      offsetY: -16,
     },
     xaxis: {
       type: 'numeric',
@@ -234,8 +336,8 @@ function buildChartOptions(lr87, lang87, tolerance) {
       show: true,
       position: 'top',
       fontSize: '11px',
-      customLegendItems: ['Trip', 'Restrain', 'Inside Limits', 'Boundary', 'Tolerance'],
-      markers: { fillColors: ['#ff1744', '#2979ff', '#f59e0b', '#0d47a1', '#7b1fa2'] },
+      customLegendItems: ['Trip', 'No Trip', 'Inside Limits', 'Boundary', 'Tolerance', 'Selected'],
+      markers: { fillColors: ['#ff1744', '#2979ff', '#f59e0b', '#0d47a1', '#7b1fa2', '#333'] },
     },
     annotations: {
       xaxis: [{ x: 0, strokeDashArray: 0, borderColor: '#333', borderWidth: 1.5 }],
@@ -254,7 +356,7 @@ export function setPreviewPoint(alphaMag, alphaAngle) {
   const { re, im } = polarToCartesian(alphaMag, alphaAngle);
   const s = chart.w.config.series;
   chart.updateSeries([
-    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9],
+    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10],
     { name: 'Preview', data: [{ x: round4(re), y: round4(im) }], type: 'scatter' },
   ]);
 }
@@ -263,8 +365,29 @@ export function clearPreviewPoint() {
   if (!chart) return;
   const s = chart.w.config.series;
   chart.updateSeries([
-    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9],
+    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9], s[10],
     { name: 'Preview', data: [], type: 'scatter' },
+  ]);
+}
+
+export function setSelectedPoint(alphaMag, alphaAngle, resultColor) {
+  if (!chart) return;
+  const { re, im } = polarToCartesian(alphaMag, alphaAngle);
+  const s = chart.w.config.series;
+  chart.updateSeries([
+    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9],
+    { name: 'Selected', data: [{ x: round4(re), y: round4(im) }], type: 'scatter' },
+    s[11],
+  ]);
+}
+
+export function clearSelectedPoint() {
+  if (!chart) return;
+  const s = chart.w.config.series;
+  chart.updateSeries([
+    s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9],
+    { name: 'Selected', data: [], type: 'scatter' },
+    s[11],
   ]);
 }
 
@@ -282,27 +405,31 @@ export function updateTestPoints(testPoints) {
         pointNum: tp.point_number,
       },
     };
-    if (tp.expected_result === 'TRIP') tripData.push(point);
-    else if (tp.expected_result === 'RESTRAIN') restrainData.push(point);
+    const result = tp.overall_result || tp.expected_result;
+    if (result === 'TRIP') tripData.push(point);
+    else if (result === 'NO_TRIP' || result === 'RESTRAIN') restrainData.push(point);
     else limitsData.push(point);
   }
   const s = chart.w.config.series;
   chart.updateSeries([
     s[0], s[1], s[2], s[3], s[4], s[5], s[6],
     { name: 'Trip', data: tripData, type: 'scatter' },
-    { name: 'Restrain', data: restrainData, type: 'scatter' },
+    { name: 'No Trip', data: restrainData, type: 'scatter' },
     { name: 'Inside Limits', data: limitsData, type: 'scatter' },
-    s[10] || { name: 'Preview', data: [], type: 'scatter' },
+    s[10] || { name: 'Selected', data: [], type: 'scatter' },
+    s[11] || { name: 'Preview', data: [], type: 'scatter' },
   ]);
 }
 
 export function updateChartRange(lr87) {
   if (!chart) return;
   const range = lr87 + 1.5;
-  chart.updateOptions({
-    xaxis: { min: -range, max: range },
-    yaxis: { min: -range, max: range },
-  }, false, false);
+  defaultHalfRange = range;
+  // Reset view to default when relay settings change
+  viewCenterX = 0;
+  viewCenterY = 0;
+  viewHalfRange = range;
+  applyView();
 }
 
 export function drawRestraintOverlay(lr87, lang87, tolerance) {
@@ -325,12 +452,11 @@ export function drawRestraintOverlay(lr87, lang87, tolerance) {
     s[7] || { name: 'Trip', data: [], type: 'scatter' },
     s[8] || { name: 'Restrain', data: [], type: 'scatter' },
     s[9] || { name: 'Inside Limits', data: [], type: 'scatter' },
-    s[10] || { name: 'Preview', data: [], type: 'scatter' },
+    s[10] || { name: 'Selected', data: [], type: 'scatter' },
+    s[11] || { name: 'Preview', data: [], type: 'scatter' },
   ]);
-  chart.updateOptions({
-    xaxis: { min: -range, max: range },
-    yaxis: { min: -range, max: range },
-  }, false, false);
+  // Don't reset zoom when redrawing overlay — keep current view
+  applyView();
 }
 
 export function getChartDataURI() {

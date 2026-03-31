@@ -43,6 +43,10 @@ pub struct TestParameters {
     pub delay_time_s: f64,
     pub fault_type: String,
     pub tolerance: f64,
+    #[serde(default)]
+    pub diff_tolerance_pct: f64,
+    #[serde(default)]
+    pub diff_tolerance_abs_ma: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +70,23 @@ pub struct TestPoint {
     pub expected_result: String,
     pub actual_result: Option<String>,
     pub notes: String,
+    // Per-test overrides (None = use global)
+    #[serde(default)]
+    pub custom_ref_current_mag: Option<f64>,
+    #[serde(default)]
+    pub custom_fault_type: Option<String>,
+    // Differential current results (calculated)
+    #[serde(default)]
+    pub diff_current_mag: f64,
+    #[serde(default)]
+    pub diff_current_phase: String,
+    // Three-line result breakdown
+    #[serde(default)]
+    pub alpha_result: String,
+    #[serde(default)]
+    pub diff_result: String,
+    #[serde(default)]
+    pub overall_result: String,
 }
 
 impl AlphaPlaneProject {
@@ -73,7 +94,7 @@ impl AlphaPlaneProject {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
             _id: uuid::Uuid::new_v4().to_string(),
-            version: "1.0.0".to_string(),
+            version: "2.0.0".to_string(),
             created_at: now.clone(),
             updated_at: now,
             report_info: ReportInfo {
@@ -102,6 +123,8 @@ impl AlphaPlaneProject {
                 delay_time_s: 0.5,
                 fault_type: "3P".to_string(),
                 tolerance: 5.0,
+                diff_tolerance_pct: 5.0,
+                diff_tolerance_abs_ma: 20.0,
             },
             test_points: Vec::new(),
         }
